@@ -12,6 +12,21 @@ A self-hosted V2Ray/Xray subscription aggregator for Cloudflare Workers. It prov
 
 The project is a single Cloudflare Worker script (`worker.js`) with no npm runtime dependencies. Cloudflare Workers KV stores the group configuration, rotation setting, subscription token, and cached upstream configurations.
 
+## Features
+
+- **Round-robin chunk rotation:** interleaves entries from ordered server groups in configurable chunk sizes instead of exhausting one group before the next.
+- **Mixed input per group:** manage direct proxy URIs or one or more upstream subscription URLs, and choose a different mode for each group.
+- **Live upstream fetching with KV fallback:** refreshes upstream feeds when a client requests the subscription and uses cached entries when fetching fails or no usable entries are returned.
+- **Plain-text and Base64 subscription output:** Base64 is the default for compatible clients; `?format=plain` is available for manual inspection.
+- **Automatic node remarks:** attempts to label entries with their group name and IP/host, including VMess remark rewriting and IPv6 host normalisation for supported URI forms.
+- **IPv4/IPv6 host parsing:** recognises bracketed IPv6 and normalises supported unbracketed IPv6 authorities to bracketed form.
+- **Group ordering controls:** drag-and-drop reordering plus up/down controls for precise ordering.
+- **Live dashboard counts and status:** displays group/configuration counts and subscription sync results in the interface.
+- **Protected dashboard:** password-gated admin page with an `HttpOnly`, `Secure`, `SameSite=Strict` session cookie.
+- **Regeneratable subscription token:** generate a new six-digit subscription URL code and invalidate the previous one.
+- **Unsaved-change safeguards:** sticky save bar, unsaved-state indicator, before-leaving warning, and keyboard shortcut.
+- **Single-file deployment:** the Worker and its HTML/CSS/JavaScript dashboard are contained in `worker.js`, with no npm runtime dependencies.
+
 ## 1. Deploy on Cloudflare
 
 You need a Cloudflare account. These steps use the Cloudflare dashboard, so you do not need to install Node.js, Wrangler, or any local development tools.
@@ -183,18 +198,3 @@ No license file is included because no license was specified. A public GitHub re
 - [Workers KV getting started](https://developers.cloudflare.com/kv/get-started/)
 - [KV namespace bindings](https://developers.cloudflare.com/kv/concepts/kv-namespaces/)
 - [Workers platform limits](https://developers.cloudflare.com/workers/platform/limits/)
-
-## Features
-
-- **Round-robin chunk rotation:** interleaves entries from ordered server groups in configurable chunk sizes instead of exhausting one group before the next.
-- **Mixed input per group:** manage direct proxy URIs or one or more upstream subscription URLs, and choose a different mode for each group.
-- **Live upstream fetching with KV fallback:** refreshes upstream feeds when a client requests the subscription and uses cached entries when fetching fails or no usable entries are returned.
-- **Plain-text and Base64 subscription output:** Base64 is the default for compatible clients; `?format=plain` is available for manual inspection.
-- **Automatic node remarks:** attempts to label entries with their group name and IP/host, including VMess remark rewriting and IPv6 host normalisation for supported URI forms.
-- **IPv4/IPv6 host parsing:** recognises bracketed IPv6 and normalises supported unbracketed IPv6 authorities to bracketed form.
-- **Group ordering controls:** drag-and-drop reordering plus up/down controls for precise ordering.
-- **Live dashboard counts and status:** displays group/configuration counts and subscription sync results in the interface.
-- **Protected dashboard:** password-gated admin page with an `HttpOnly`, `Secure`, `SameSite=Strict` session cookie.
-- **Regeneratable subscription token:** generate a new six-digit subscription URL code and invalidate the previous one.
-- **Unsaved-change safeguards:** sticky save bar, unsaved-state indicator, before-leaving warning, and keyboard shortcut.
-- **Single-file deployment:** the Worker and its HTML/CSS/JavaScript dashboard are contained in `worker.js`, with no npm runtime dependencies.
