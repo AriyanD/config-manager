@@ -998,3 +998,1018 @@ function getAdminPanelHTML(baseUrl, serverGroups, rotationChunk, subToken) {
             .server-group { padding: 14px 14px 12px 18px; }
             kbd, .kbd-hint { display: none; }
         }
+    </style>
+</head>
+<body>
+    <div class="toasts" id="toasts"></div>
+
+    <div class="container">
+        <header>
+            <div class="brand">
+                <div class="brand-logo">🛰️</div>
+                <div>
+                    <h1>Config Manager</h1>
+                    <div class="brand-sub">Group, rotate and publish your subscription</div>
+                </div>
+            </div>
+            <button class="btn" onclick="addNewGroup()">+ Add Server Group</button>
+        </header>
+
+        <div class="stats">
+            <div class="stat"><div class="stat-label">Configs</div><div class="stat-value" id="statConfigs">0</div></div>
+            <div class="stat"><div class="stat-label">Groups</div><div class="stat-value" id="statGroups">0</div></div>
+            <div class="stat"><div class="stat-label">Batches</div><div class="stat-value" id="statBatches">0<small>per output</small></div></div>
+        </div>
+
+        <div class="card sub-card">
+            <div class="sub-card-main">
+                <div class="card-title">
+                    <span>Protected subscription link</span>
+                    <span class="code-badge" id="subTokenBadge">code ${safeSubToken}</span>
+                </div>
+                <div class="sub-url-row"><code id="subUrl">${baseUrl}/sub/${safeSubToken}</code></div>
+            </div>
+            <div class="sub-card-actions">
+                <button class="btn btn-ghost" id="regenTokenBtn" onclick="regenerateSubToken()" title="Generate a new random 6-digit subscription link code">New code</button>
+                <button class="btn" id="copySubBtn" onclick="copySubLink()">Copy link</button>
+            </div>
+        </div>
+
+        <div class="card" id="divideCard">
+            <div class="divide-top">
+                <div>
+                    <div class="card-title">Divide preference</div>
+                    <div class="card-desc" id="divideHintText">
+                        Output rotates through groups ${safeChunk} configs at a time, in the order shown below.
+                    </div>
+                </div>
+                <div class="segmented">
+                    <button type="button" class="chunk-preset-btn" data-chunk="1" onclick="setRotationChunk(1)">1</button>
+                    <button type="button" class="chunk-preset-btn" data-chunk="2" onclick="setRotationChunk(2)">2</button>
+                    <button type="button" class="chunk-preset-btn" data-chunk="3" onclick="setRotationChunk(3)">3</button>
+                    <button type="button" class="chunk-preset-btn" data-chunk="5" onclick="setRotationChunk(5)">5</button>
+                    <button type="button" class="chunk-preset-btn" data-chunk="10" onclick="setRotationChunk(10)">10</button>
+                    <div class="chunk-custom-wrap">
+                        <span>Custom</span>
+                        <input type="number" id="customChunkInput" class="chunk-custom-input" min="1" max="500" value="${safeChunk}" oninput="onCustomChunkInput(this.value)">
+                    </div>
+                </div>
+            </div>
+            <div class="preview-toggle" onclick="togglePreview()">
+                <div class="card-title"><span class="chev">▶</span><span>Output order preview</span></div>
+                <span class="sub-status-text" id="previewSummary"></span>
+            </div>
+            <div class="preview-body">
+                <div class="preview-legend">Each pill is one batch in the exact order your VPN app will list them. A dashed amber outline means that group had fewer configs left than the batch size (its last, partial batch).</div>
+                <div class="batches" id="batches"></div>
+            </div>
+        </div>
+
+        <div class="hint">Each group can use Direct Configs or Subscription Links. Drag the ⠿ handle onto a highlighted gap, or use the arrows to reorder.</div>
+
+        <div id="groupsContainer"></div>
+    </div>
+
+    <div class="floating-save-bar">
+        <div class="floating-save-inner">
+            <div class="save-status">
+                <span class="dirty-dot" id="dirtyDot"></span>
+                <span id="saveStatusText">All changes saved</span>
+                <span class="sep">•</span>
+                <span id="floatingTotalText">0 configs across 0 groups</span>
+                <span class="sep">•</span>
+                <span id="floatingChunkText">Divide: ${safeChunk}/group</span>
+            </div>
+            <div class="floating-actions">
+                <button class="btn btn-ghost" onclick="addNewGroup()">+ Group</button>
+                <button class="btn" id="saveAllBtn" onclick="saveAll()">Save changes <kbd>Ctrl S</kbd></button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const NEWLINE_CHAR = String.fromCharCode(10);
+        const CR_CHAR = String.fromCharCode(13);
+        const BASE_ORIGIN = ${JSON.stringify(baseUrl)};
+        const SCHEME_RE = /^[a-z][a-z0-9+.\\-]*:\\/\\//i;
+        const SAVE_LABEL = 'Save changes <kbd>Ctrl S</kbd>';
+        let dataGroups = ${safeGroupsJson};
+        let currentRotationChunk = ${safeChunk};
+        let currentSubToken = ${JSON.stringify(safeSubToken)};
+        let dragFromIndex = null;
+        let dropPosition = null;
+        let hasUnsavedChanges = false;
+
+        // Drag auto-scroller state
+        let dragPointerX = 0;
+        let dragPointerY = 0;
+        let dragScrollRAF = null;
+
+        function showToast(message, type) {
+            const box = document.getElementById('toasts');
+            const t = document.createElement('div');
+            t.className = 'toast' + (type ? ' ' + type : '');
+            t.textContent = message;
+            box.appendChild(t);
+            setTimeout(function() {
+                t.classList.add('out');
+                setTimeout(function() { t.remove(); }, 250);
+            }, 2800);
+        }
+
+        function hueFor(name) {
+            let h = 0;
+            for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+            return h;
+        }
+        function colorFor(name) { return 'hsl(' + hueFor(name) + ', 68%, 60%)'; }
+        function softColorFor(name) { return 'hsla(' + hueFor(name) + ', 68%, 55%, 0.20)'; }
+
+        function getScheme(line) {
+            const m = String(line || '').trim().match(/^([a-z][a-z0-9+.\\-]*):\\/\\//i);
+            return m ? m[1].toLowerCase() : '';
+        }
+        function isHttpLine(line) {
+            const s = String(line || '').trim().toLowerCase();
+            return s.startsWith('http://') || s.startsWith('https://');
+        }
+
+        // Any "scheme://" begins a NEW entry, same rule as the server
+        function parseLines(text) {
+            const rawLines = String(text || '')
+                .split(NEWLINE_CHAR)
+                .map(line => line.replace(CR_CHAR, '').trim())
+                .filter(line => line !== '');
+            const stitched = [];
+            for (let i = 0; i < rawLines.length; i++) {
+                const line = rawLines[i];
+                if (SCHEME_RE.test(line)) {
+                    stitched.push(line);
+                } else if (
+                    stitched.length > 0 &&
+                    !/\\s/.test(line) &&
+                    !line.startsWith('//') &&
+                    !line.startsWith(';') &&
+                    !line.startsWith('#')
+                ) {
+                    stitched[stitched.length - 1] += line;
+                }
+            }
+            return stitched;
+        }
+
+        function isIPv6Config(line) {
+            const s = String(line || '');
+            const at = s.lastIndexOf('@');
+            if (at === -1) return /\\[[0-9a-f:]+\\]/i.test(s);
+            const rest = s.slice(at + 1).split(/[?\\/#]/)[0];
+            return (rest.match(/:/g) || []).length >= 2;
+        }
+
+        function normalizeGroupKey(str) {
+            return String(str || '').trim().split(' ').filter(Boolean).join('_');
+        }
+
+        function ensureGroupObj(entry) {
+            if (Array.isArray(entry)) {
+                const lines = entry.map(c => String(c || '').trim()).filter(Boolean);
+                const subUrls = lines.filter(isHttpLine);
+                const configs = lines.filter(l => !isHttpLine(l));
+                return {
+                    mode: (subUrls.length > 0 && configs.length === 0) ? 'sub' : 'configs',
+                    configs: configs,
+                    subUrls: subUrls,
+                    cachedSubConfigs: []
+                };
+            }
+            if (entry && typeof entry === 'object') {
+                return {
+                    mode: entry.mode === 'sub' ? 'sub' : 'configs',
+                    configs: Array.isArray(entry.configs) ? entry.configs : [],
+                    subUrls: Array.isArray(entry.subUrls) ? entry.subUrls : [],
+                    cachedSubConfigs: Array.isArray(entry.cachedSubConfigs) ? entry.cachedSubConfigs : []
+                };
+            }
+            return { mode: 'configs', configs: [], subUrls: [], cachedSubConfigs: [] };
+        }
+
+        function setRotationChunk(val) {
+            const parsed = Math.max(1, Math.min(500, parseInt(val, 10) || 1));
+            currentRotationChunk = parsed;
+            const input = document.getElementById('customChunkInput');
+            if (input && parseInt(input.value, 10) !== parsed) input.value = parsed;
+            updateChunkUI();
+            updateAllCounts();
+            markDirty(true);
+        }
+
+        function onCustomChunkInput(val) {
+            const parsed = parseInt(val, 10);
+            if (!Number.isFinite(parsed) || parsed < 1) return;
+            currentRotationChunk = Math.min(500, parsed);
+            updateChunkUI();
+            updateAllCounts();
+            markDirty(true);
+        }
+
+        function updateChunkUI() {
+            document.querySelectorAll('.chunk-preset-btn').forEach(btn => {
+                const c = parseInt(btn.getAttribute('data-chunk'), 10);
+                btn.classList.toggle('active', c === currentRotationChunk);
+            });
+            const hint = document.getElementById('divideHintText');
+            if (hint) {
+                hint.textContent = 'Output rotates through groups ' + currentRotationChunk + (currentRotationChunk === 1 ? ' config' : ' configs') + ' at a time, in the order shown below.';
+            }
+            const floatingChunk = document.getElementById('floatingChunkText');
+            if (floatingChunk) floatingChunk.textContent = 'Divide: ' + currentRotationChunk + '/group';
+        }
+
+        function togglePreview() {
+            document.getElementById('divideCard').classList.toggle('preview-open');
+        }
+
+        function markDirty(isDirty) {
+            hasUnsavedChanges = isDirty;
+            const dot = document.getElementById('dirtyDot');
+            const statusText = document.getElementById('saveStatusText');
+            if (!dot || !statusText) return;
+            dot.classList.toggle('dirty', isDirty);
+            statusText.textContent = isDirty ? 'Unsaved changes' : 'All changes saved';
+            statusText.style.color = isDirty ? '#fcd34d' : '';
+        }
+
+        function getGroupEffectiveCount(groupEl) {
+            const mode = groupEl.dataset.mode === 'sub' ? 'sub' : 'configs';
+            if (mode === 'sub') {
+                const subArea = groupEl.querySelector('.sub-textarea');
+                const subUrls = parseLines(subArea ? subArea.value : '').filter(isHttpLine);
+                const cached = Array.isArray(groupEl._cachedSubConfigs) ? groupEl._cachedSubConfigs : [];
+                return { mode: 'sub', count: cached.length, subUrlCount: subUrls.length, lines: cached };
+            }
+            const cfgArea = groupEl.querySelector('.configs-textarea');
+            const lines = parseLines(cfgArea ? cfgArea.value : '');
+            return { mode: 'configs', count: lines.length, subUrlCount: 0, lines: lines };
+        }
+
+        function renderChips(container, lines) {
+            container.innerHTML = '';
+            if (!lines || lines.length === 0) return;
+            const counts = {};
+            let v6 = 0;
+            lines.forEach(function(l) {
+                const s = getScheme(l) || 'other';
+                counts[s] = (counts[s] || 0) + 1;
+                if (isIPv6Config(l)) v6++;
+            });
+            Object.keys(counts).forEach(function(s) {
+                const c = document.createElement('span');
+                c.className = 'chip';
+                c.textContent = s + ' ' + counts[s];
+                container.appendChild(c);
+            });
+            if (v6 > 0) {
+                const c = document.createElement('span');
+                c.className = 'chip v6';
+                c.textContent = 'ipv6 ' + v6;
+                container.appendChild(c);
+            }
+        }
+
+        function renderPreview(groupInfos) {
+            const box = document.getElementById('batches');
+            const summary = document.getElementById('previewSummary');
+            if (!box) return;
+            box.innerHTML = '';
+            const chunk = currentRotationChunk;
+            const batches = [];
+            let offset = 0;
+            let guard = 0;
+            while (guard++ < 5000) {
+                let added = false;
+                for (let i = 0; i < groupInfos.length; i++) {
+                    const g = groupInfos[i];
+                    const n = Math.min(chunk, g.count - offset);
+                    if (n <= 0) continue;
+                    added = true;
+                    batches.push({ name: g.name, n: n, partial: n < chunk });
+                }
+                if (!added) break;
+                offset += chunk;
+            }
+            const MAX = 60;
+            batches.slice(0, MAX).forEach(function(b, idx) {
+                if (idx > 0) {
+                    const sep = document.createElement('span');
+                    sep.className = 'batch-sep';
+                    sep.textContent = '→';
+                    box.appendChild(sep);
+                }
+                const pill = document.createElement('span');
+                pill.className = 'batch-pill' + (b.partial ? ' partial' : '');
+                pill.style.background = softColorFor(b.name);
+                pill.appendChild(document.createTextNode(b.name.replace(/_/g, ' ') + ' '));
+                const bold = document.createElement('b');
+                bold.textContent = '×' + b.n;
+                pill.appendChild(bold);
+                if (b.partial) pill.title = 'Partial batch: this group has fewer than ' + chunk + ' configs left';
+                box.appendChild(pill);
+            });
+            if (batches.length > MAX) {
+                const more = document.createElement('span');
+                more.className = 'batch-more';
+                more.textContent = '… +' + (batches.length - MAX) + ' more';
+                box.appendChild(more);
+            }
+            if (batches.length === 0) {
+                const none = document.createElement('span');
+                none.className = 'batch-more';
+                none.textContent = 'Nothing to preview yet.';
+                box.appendChild(none);
+            }
+            const partials = batches.filter(b => b.partial).length;
+            if (summary) {
+                summary.textContent = batches.length + (batches.length === 1 ? ' batch' : ' batches') + (partials ? ' • ' + partials + ' partial' : '');
+            }
+            return batches.length;
+        }
+
+        // Recalculate counts, chips, preview and totals without losing focus
+        function updateAllCounts() {
+            let totalConfigs = 0;
+            const groupElements = document.querySelectorAll('.server-group');
+            const totalGroups = groupElements.length;
+            const infos = [];
+
+            groupElements.forEach(el => {
+                const info = getGroupEffectiveCount(el);
+                totalConfigs += info.count;
+
+                const titleInput = el.querySelector('.group-title');
+                const cleanTitle = (titleInput && titleInput.value.trim()) ? titleInput.value.trim() : 'Group';
+                const keyName = normalizeGroupKey(cleanTitle) || 'Group';
+                infos.push({ name: keyName, count: info.count });
+
+                const color = colorFor(keyName);
+                el.style.setProperty('--gc', color);
+
+                const badge = el.querySelector('.config-count-badge');
+                if (badge) {
+                    if (info.mode === 'sub') {
+                        if (info.subUrlCount === 0) {
+                            badge.textContent = '0 sub links';
+                            badge.className = 'config-count-badge empty';
+                        } else if (info.count > 0) {
+                            badge.textContent = info.subUrlCount + (info.subUrlCount === 1 ? ' link' : ' links') + ' • ' + info.count + (info.count === 1 ? ' config' : ' configs');
+                            badge.className = 'config-count-badge sub-mode';
+                        } else {
+                            badge.textContent = info.subUrlCount + (info.subUrlCount === 1 ? ' link' : ' links') + ' (sync on save)';
+                            badge.className = 'config-count-badge sub-mode';
+                        }
+                    } else {
+                        badge.textContent = info.count + (info.count === 1 ? ' config' : ' configs');
+                        badge.className = 'config-count-badge' + (info.count === 0 ? ' empty' : '');
+                    }
+                }
+
+                const chips = el.querySelector('.chips');
+                if (chips) renderChips(chips, info.lines);
+
+                const prefixCode = el.querySelector('.group-prefix-code');
+                if (prefixCode) prefixCode.textContent = '#' + cleanTitle + ' - <IP>';
+
+                const roundsSpan = el.querySelector('.group-rounds-text');
+                if (roundsSpan) {
+                    const rounds = Math.ceil(info.count / currentRotationChunk);
+                    roundsSpan.textContent = rounds + (rounds === 1 ? ' batch' : ' batches') + ' of ' + currentRotationChunk;
+                }
+            });
+
+            const batchCount = renderPreview(infos) || 0;
+
+            document.getElementById('statConfigs').textContent = totalConfigs;
+            document.getElementById('statGroups').textContent = totalGroups;
+            document.getElementById('statBatches').innerHTML = batchCount + '<small>per output</small>';
+            document.getElementById('floatingTotalText').textContent =
+                totalConfigs + (totalConfigs === 1 ? ' config' : ' configs') + ' across ' + totalGroups + (totalGroups === 1 ? ' group' : ' groups');
+        }
+
+        // Read the current on-screen state back into dataGroups
+        function syncFromDOM() {
+            const groupEls = document.querySelectorAll('.server-group');
+            if (groupEls.length === 0) return;
+            const ordered = {};
+            groupEls.forEach((el, idx) => {
+                const prevName = el.dataset.originalName;
+                const prevEntry = ensureGroupObj(dataGroups[prevName]);
+
+                const titleInput = el.querySelector('.group-title');
+                let rawName = (titleInput && titleInput.value.trim()) ? normalizeGroupKey(titleInput.value) : prevName;
+                if (!rawName) rawName = 'Group_' + (idx + 1);
+                let uniqueName = rawName;
+                let suffix = 2;
+                while (Object.prototype.hasOwnProperty.call(ordered, uniqueName)) {
+                    uniqueName = rawName + '_' + suffix;
+                    suffix++;
+                }
+                el.dataset.originalName = uniqueName;
+                if (titleInput) titleInput.value = uniqueName.replace(/_/g, ' ');
+
+                const mode = el.dataset.mode === 'sub' ? 'sub' : 'configs';
+                const cfgArea = el.querySelector('.configs-textarea');
+                const subArea = el.querySelector('.sub-textarea');
+
+                const configs = cfgArea ? parseLines(cfgArea.value) : prevEntry.configs;
+                const subUrls = subArea ? parseLines(subArea.value) : prevEntry.subUrls;
+                const cachedSubConfigs = Array.isArray(el._cachedSubConfigs) ? el._cachedSubConfigs : prevEntry.cachedSubConfigs;
+
+                ordered[uniqueName] = { mode: mode, configs: configs, subUrls: subUrls, cachedSubConfigs: cachedSubConfigs };
+            });
+            dataGroups = ordered;
+        }
+
+        function deduplicateGroup(groupDiv) {
+            const mode = groupDiv.dataset.mode === 'sub' ? 'sub' : 'configs';
+            const textarea = groupDiv.querySelector(mode === 'sub' ? '.sub-textarea' : '.configs-textarea');
+            if (!textarea) return;
+            const lines = parseLines(textarea.value);
+            const unique = Array.from(new Set(lines));
+            const removed = lines.length - unique.length;
+            textarea.value = unique.join(NEWLINE_CHAR);
+            updateAllCounts();
+            if (removed > 0) {
+                markDirty(true);
+                showToast('Removed ' + removed + ' duplicate' + (removed === 1 ? '' : 's'), 'ok');
+            } else {
+                showToast('No duplicates found');
+            }
+        }
+
+        async function syncGroupSubLinks(groupDiv, statusEl, syncBtn) {
+            const subArea = groupDiv.querySelector('.sub-textarea');
+            const urls = parseLines(subArea ? subArea.value : '').filter(isHttpLine);
+            if (urls.length === 0) {
+                statusEl.textContent = 'Enter at least one https:// subscription link first.';
+                statusEl.className = 'sub-status-text err';
+                return;
+            }
+            syncBtn.disabled = true;
+            syncBtn.textContent = 'Syncing…';
+            statusEl.textContent = 'Fetching subscription configs…';
+            statusEl.className = 'sub-status-text';
+            try {
+                const res = await fetch('/fetch-sub', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ urls: urls })
+                });
+                const data = await res.json();
+                if (data && Array.isArray(data.configs) && data.configs.length > 0) {
+                    groupDiv._cachedSubConfigs = data.configs;
+                    statusEl.textContent = 'Synced ' + data.configs.length + (data.configs.length === 1 ? ' config' : ' configs') + ' from ' + urls.length + (urls.length === 1 ? ' link' : ' links');
+                    statusEl.className = 'sub-status-text ok';
+                    syncFromDOM();
+                    updateAllCounts();
+                    markDirty(true);
+                } else {
+                    const errMsg = (data && data.errors && data.errors.length > 0) ? data.errors[0] : (data && data.error ? data.error : 'No valid configs returned');
+                    statusEl.textContent = errMsg;
+                    statusEl.className = 'sub-status-text err';
+                }
+            } catch (e) {
+                statusEl.textContent = 'Failed to fetch subscription link.';
+                statusEl.className = 'sub-status-text err';
+            } finally {
+                syncBtn.disabled = false;
+                syncBtn.textContent = 'Sync & count';
+            }
+        }
+
+        function highlightZone(position) {
+            if (dropPosition === position) return;
+            dropPosition = position;
+            document.querySelectorAll('.drop-zone').forEach(z => {
+                z.classList.toggle('hover', parseInt(z.dataset.position, 10) === position);
+            });
+        }
+
+        function updateDropTargetFromPoint(clientX, clientY) {
+            if (dragFromIndex === null) return;
+            const groups = document.querySelectorAll('.server-group');
+            if (groups.length === 0) return;
+
+            for (let i = 0; i < groups.length; i++) {
+                const rect = groups[i].getBoundingClientRect();
+                if (clientY >= rect.top - 16 && clientY <= rect.bottom + 16) {
+                    const above = (clientY - rect.top) < rect.height / 2;
+                    highlightZone(above ? i : i + 1);
+                    return;
+                }
+            }
+            const firstRect = groups[0].getBoundingClientRect();
+            if (clientY < firstRect.top) { highlightZone(0); return; }
+            const lastRect = groups[groups.length - 1].getBoundingClientRect();
+            if (clientY > lastRect.bottom) highlightZone(groups.length);
+        }
+
+        function startDragAutoScrollLoop() {
+            if (dragScrollRAF !== null) return;
+            function step() {
+                if (dragFromIndex === null) { dragScrollRAF = null; return; }
+                const vh = window.innerHeight || document.documentElement.clientHeight;
+                const TOP_ZONE = 150;
+                const BOTTOM_ZONE = 175;
+                let deltaY = 0;
+
+                if (dragPointerY > 0 && dragPointerY < TOP_ZONE) {
+                    const intensity = Math.min(1, (TOP_ZONE - dragPointerY) / TOP_ZONE);
+                    deltaY = -Math.round(8 + intensity * intensity * 34);
+                } else if (dragPointerY > vh - BOTTOM_ZONE) {
+                    const intensity = Math.min(1, (dragPointerY - (vh - BOTTOM_ZONE)) / BOTTOM_ZONE);
+                    deltaY = Math.round(8 + intensity * intensity * 34);
+                }
+
+                if (deltaY !== 0) {
+                    window.scrollBy(0, deltaY);
+                    updateDropTargetFromPoint(dragPointerX, dragPointerY);
+                }
+                dragScrollRAF = requestAnimationFrame(step);
+            }
+            dragScrollRAF = requestAnimationFrame(step);
+        }
+
+        function stopDragAutoScrollLoop() {
+            if (dragScrollRAF !== null) { cancelAnimationFrame(dragScrollRAF); dragScrollRAF = null; }
+        }
+
+        function clearDragState() {
+            dragFromIndex = null;
+            dropPosition = null;
+            stopDragAutoScrollLoop();
+            document.body.classList.remove('is-dragging');
+            document.querySelectorAll('.drop-zone.hover').forEach(z => z.classList.remove('hover'));
+            document.querySelectorAll('.server-group.dragging').forEach(g => g.classList.remove('dragging'));
+        }
+
+        function commitDrop() {
+            if (dragFromIndex === null || dropPosition === null) { clearDragState(); return; }
+            const from = dragFromIndex;
+            const pos = dropPosition;
+            clearDragState();
+            moveGroupToPosition(from, pos);
+        }
+
+        function makeDropZone(position) {
+            const zone = document.createElement('div');
+            zone.className = 'drop-zone';
+            zone.dataset.position = position;
+            zone.addEventListener('dragover', function(e) {
+                if (dragFromIndex === null) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                highlightZone(position);
+            });
+            zone.addEventListener('drop', function(e) {
+                if (dragFromIndex === null) return;
+                e.preventDefault();
+                e.stopPropagation();
+                highlightZone(position);
+                commitDrop();
+            });
+            return zone;
+        }
+
+        function renderGroups() {
+            const container = document.getElementById('groupsContainer');
+            container.innerHTML = '';
+
+            const names = Object.keys(dataGroups);
+
+            if (names.length === 0) {
+                const emptyBox = document.createElement('div');
+                emptyBox.className = 'empty-groups-state';
+                emptyBox.innerHTML = '<div style="margin-bottom: 14px; font-size: 14px;">No server groups yet. Add your first group to paste V2Ray configs or subscription links.</div><button class="btn" onclick="addNewGroup()">+ Add Server Group</button>';
+                container.appendChild(emptyBox);
+                updateAllCounts();
+                return;
+            }
+
+            container.appendChild(makeDropZone(0));
+
+            names.forEach((groupName, index) => {
+                const entry = ensureGroupObj(dataGroups[groupName]);
+                dataGroups[groupName] = entry;
+
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'server-group';
+                groupDiv.dataset.originalName = groupName;
+                groupDiv.dataset.index = index;
+                groupDiv.dataset.mode = entry.mode;
+                groupDiv._cachedSubConfigs = entry.cachedSubConfigs;
+
+                const headerDiv = document.createElement('div');
+                headerDiv.className = 'group-header';
+
+                const leftDiv = document.createElement('div');
+                leftDiv.className = 'header-left';
+
+                const handle = document.createElement('span');
+                handle.className = 'drag-handle';
+                handle.textContent = '\\u283F';
+                handle.title = 'Drag to reorder this group';
+                handle.draggable = true;
+
+                handle.addEventListener('dragstart', function(e) {
+                    dragFromIndex = index;
+                    dropPosition = null;
+                    dragPointerX = e.clientX;
+                    dragPointerY = e.clientY;
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', groupName);
+                    if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(headerDiv, 24, 16);
+                    setTimeout(function() {
+                        if (dragFromIndex === null) return;
+                        document.body.classList.add('is-dragging');
+                        groupDiv.classList.add('dragging');
+                        startDragAutoScrollLoop();
+                    }, 0);
+                });
+                handle.addEventListener('dragend', function() { clearDragState(); });
+
+                const collapseBtn = document.createElement('button');
+                collapseBtn.type = 'button';
+                collapseBtn.className = 'collapse-btn';
+                collapseBtn.title = 'Collapse / expand';
+                collapseBtn.innerHTML = '<span class="chev">\\u25B6</span>';
+                collapseBtn.onclick = function() { groupDiv.classList.toggle('collapsed'); };
+
+                const titleInput = document.createElement('input');
+                titleInput.type = 'text';
+                titleInput.className = 'group-title';
+                titleInput.value = groupName.replace(/_/g, ' ');
+                titleInput.addEventListener('input', function() { updateAllCounts(); markDirty(true); });
+                titleInput.onchange = function() { updateGroupName(titleInput); };
+
+                const countBadge = document.createElement('span');
+                countBadge.className = 'config-count-badge';
+
+                leftDiv.appendChild(handle);
+                leftDiv.appendChild(collapseBtn);
+                leftDiv.appendChild(titleInput);
+                leftDiv.appendChild(countBadge);
+
+                const rightDiv = document.createElement('div');
+                rightDiv.className = 'header-right';
+
+                const dedupBtn = document.createElement('button');
+                dedupBtn.className = 'btn btn-ghost';
+                dedupBtn.textContent = 'Dedupe';
+                dedupBtn.title = 'Remove duplicate & empty lines in this group';
+                dedupBtn.onclick = function() { deduplicateGroup(groupDiv); };
+
+                const upBtn = document.createElement('button');
+                upBtn.className = 'icon-btn';
+                upBtn.textContent = '\\u2191';
+                upBtn.title = 'Move group up';
+                upBtn.disabled = index === 0;
+                upBtn.onclick = function() { moveGroup(index, -1); };
+
+                const downBtn = document.createElement('button');
+                downBtn.className = 'icon-btn';
+                downBtn.textContent = '\\u2193';
+                downBtn.title = 'Move group down';
+                downBtn.disabled = index === names.length - 1;
+                downBtn.onclick = function() { moveGroup(index, 1); };
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn btn-danger-ghost';
+                delBtn.textContent = 'Delete';
+                delBtn.onclick = function() { deleteGroup(groupName); };
+
+                rightDiv.appendChild(dedupBtn);
+                rightDiv.appendChild(upBtn);
+                rightDiv.appendChild(downBtn);
+                rightDiv.appendChild(delBtn);
+
+                headerDiv.appendChild(leftDiv);
+                headerDiv.appendChild(rightDiv);
+
+                const body = document.createElement('div');
+                body.className = 'group-body';
+
+                const chips = document.createElement('div');
+                chips.className = 'chips';
+
+                const modeBar = document.createElement('div');
+                modeBar.className = 'mode-bar';
+
+                const switchGroup = document.createElement('div');
+                switchGroup.className = 'mode-switch-group';
+
+                const directModeBtn = document.createElement('button');
+                directModeBtn.type = 'button';
+                directModeBtn.className = 'mode-btn' + (entry.mode === 'configs' ? ' active' : '');
+                directModeBtn.textContent = 'Direct configs';
+
+                const subModeBtn = document.createElement('button');
+                subModeBtn.type = 'button';
+                subModeBtn.className = 'mode-btn' + (entry.mode === 'sub' ? ' active sub-active' : '');
+                subModeBtn.textContent = 'Subscription link';
+
+                switchGroup.appendChild(directModeBtn);
+                switchGroup.appendChild(subModeBtn);
+
+                const subRight = document.createElement('div');
+                subRight.className = 'sub-actions-right';
+                subRight.style.display = entry.mode === 'sub' ? 'flex' : 'none';
+
+                const subStatus = document.createElement('span');
+                subStatus.className = 'sub-status-text' + (entry.cachedSubConfigs.length > 0 ? ' ok' : '');
+                subStatus.textContent = entry.cachedSubConfigs.length > 0
+                    ? ('Synced ' + entry.cachedSubConfigs.length + (entry.cachedSubConfigs.length === 1 ? ' config' : ' configs'))
+                    : 'Fetched live when your VPN updates, or on save';
+
+                const syncSubBtn = document.createElement('button');
+                syncSubBtn.type = 'button';
+                syncSubBtn.className = 'btn btn-ghost';
+                syncSubBtn.textContent = 'Sync & count';
+                syncSubBtn.onclick = function() { syncGroupSubLinks(groupDiv, subStatus, syncSubBtn); };
+
+                subRight.appendChild(subStatus);
+                subRight.appendChild(syncSubBtn);
+
+                modeBar.appendChild(switchGroup);
+                modeBar.appendChild(subRight);
+
+                const cfgArea = document.createElement('textarea');
+                cfgArea.className = 'configs-textarea';
+                cfgArea.spellcheck = false;
+                cfgArea.placeholder = 'Paste configurations here (vless://, vmess://, trojan://, ss://, hy2:// \\u2014 one per line)\\u2026';
+                cfgArea.value = entry.configs.join(NEWLINE_CHAR);
+                cfgArea.style.display = entry.mode === 'configs' ? 'block' : 'none';
+                cfgArea.addEventListener('input', function() { updateAllCounts(); markDirty(true); });
+
+                const subArea = document.createElement('textarea');
+                subArea.className = 'sub-textarea';
+                subArea.spellcheck = false;
+                subArea.placeholder = 'Paste subscription link(s) here (https://\\u2026 one per line)\\u2026';
+                subArea.value = entry.subUrls.join(NEWLINE_CHAR);
+                subArea.style.display = entry.mode === 'sub' ? 'block' : 'none';
+                subArea.addEventListener('input', function() { updateAllCounts(); markDirty(true); });
+
+                directModeBtn.onclick = function() {
+                    if (groupDiv.dataset.mode === 'configs') return;
+                    groupDiv.dataset.mode = 'configs';
+                    directModeBtn.className = 'mode-btn active';
+                    subModeBtn.className = 'mode-btn';
+                    cfgArea.style.display = 'block';
+                    subArea.style.display = 'none';
+                    subRight.style.display = 'none';
+                    syncFromDOM();
+                    updateAllCounts();
+                    markDirty(true);
+                };
+
+                subModeBtn.onclick = function() {
+                    if (groupDiv.dataset.mode === 'sub') return;
+                    groupDiv.dataset.mode = 'sub';
+                    directModeBtn.className = 'mode-btn';
+                    subModeBtn.className = 'mode-btn active sub-active';
+                    cfgArea.style.display = 'none';
+                    subArea.style.display = 'block';
+                    subRight.style.display = 'flex';
+                    syncFromDOM();
+                    updateAllCounts();
+                    markDirty(true);
+                };
+
+                const footerDiv = document.createElement('div');
+                footerDiv.className = 'group-footer';
+
+                const prefixSpan = document.createElement('span');
+                prefixSpan.appendChild(document.createTextNode('Renamed to: '));
+                const prefixCode = document.createElement('code');
+                prefixCode.className = 'group-prefix-code';
+                prefixSpan.appendChild(prefixCode);
+
+                const roundsSpan = document.createElement('span');
+                roundsSpan.className = 'group-rounds-text';
+
+                footerDiv.appendChild(prefixSpan);
+                footerDiv.appendChild(roundsSpan);
+
+                groupDiv.addEventListener('dragover', function(e) {
+                    if (dragFromIndex === null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    const rect = groupDiv.getBoundingClientRect();
+                    const above = (e.clientY - rect.top) < rect.height / 2;
+                    highlightZone(above ? index : index + 1);
+                });
+                groupDiv.addEventListener('drop', function(e) {
+                    if (dragFromIndex === null) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    commitDrop();
+                });
+
+                body.appendChild(chips);
+                body.appendChild(modeBar);
+                body.appendChild(cfgArea);
+                body.appendChild(subArea);
+                body.appendChild(footerDiv);
+
+                groupDiv.appendChild(headerDiv);
+                groupDiv.appendChild(body);
+                container.appendChild(groupDiv);
+
+                container.appendChild(makeDropZone(index + 1));
+            });
+
+            updateAllCounts();
+        }
+
+        function moveGroup(index, direction) {
+            const total = Object.keys(dataGroups).length;
+            const target = index + direction;
+            if (target < 0 || target >= total) return;
+            moveGroupToPosition(index, direction === 1 ? target + 1 : target);
+        }
+
+        function moveGroupToPosition(from, position) {
+            syncFromDOM();
+            const names = Object.keys(dataGroups);
+            if (from < 0 || from >= names.length) return;
+            if (position < 0 || position > names.length) return;
+            if (position === from || position === from + 1) { renderGroups(); return; }
+
+            const moved = names.splice(from, 1)[0];
+            const insertAt = position > from ? position - 1 : position;
+            names.splice(insertAt, 0, moved);
+
+            const reordered = {};
+            names.forEach(n => { reordered[n] = dataGroups[n]; });
+            dataGroups = reordered;
+            markDirty(true);
+            renderGroups();
+        }
+
+        function updateGroupName(inputElement) {
+            const groupDiv = inputElement.closest('.server-group');
+            const oldName = groupDiv.dataset.originalName;
+            const newName = normalizeGroupKey(inputElement.value);
+            if (!newName) {
+                inputElement.value = oldName.replace(/_/g, ' ');
+                updateAllCounts();
+                return;
+            }
+            if (oldName !== newName) {
+                if (Object.prototype.hasOwnProperty.call(dataGroups, newName)) {
+                    showToast('A group with that name already exists.', 'err');
+                    inputElement.value = oldName.replace(/_/g, ' ');
+                    updateAllCounts();
+                    return;
+                }
+                const rebuilt = {};
+                for (const key of Object.keys(dataGroups)) {
+                    if (key === oldName) rebuilt[newName] = dataGroups[oldName];
+                    else rebuilt[key] = dataGroups[key];
+                }
+                dataGroups = rebuilt;
+                groupDiv.dataset.originalName = newName;
+                updateAllCounts();
+                markDirty(true);
+            }
+        }
+
+        function addNewGroup() {
+            syncFromDOM();
+            const uniqueId = 'New_Server_' + Math.floor(1000 + Math.random() * 9000);
+            dataGroups[uniqueId] = { mode: 'configs', configs: [], subUrls: [], cachedSubConfigs: [] };
+            markDirty(true);
+            renderGroups();
+            const els = document.querySelectorAll('.server-group');
+            const last = els[els.length - 1];
+            if (last) {
+                last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const t = last.querySelector('.group-title');
+                if (t) { t.focus(); t.select(); }
+            }
+        }
+
+        function deleteGroup(groupName) {
+            if (confirm('Delete this server group?')) {
+                syncFromDOM();
+                delete dataGroups[groupName];
+                markDirty(true);
+                renderGroups();
+            }
+        }
+
+        async function regenerateSubToken() {
+            if (!confirm('Generate a new 6-digit subscription code? Your old subscription link will stop working immediately.')) return;
+            const btn = document.getElementById('regenTokenBtn');
+            btn.disabled = true;
+            btn.textContent = 'Generating…';
+            try {
+                const res = await fetch('/regenerate-token', { method: 'POST' });
+                const data = await res.json();
+                if (data && data.success && data.subToken) {
+                    currentSubToken = data.subToken;
+                    document.getElementById('subUrl').textContent = BASE_ORIGIN + '/sub/' + currentSubToken;
+                    document.getElementById('subTokenBadge').textContent = 'code ' + currentSubToken;
+                    showToast('New subscription code generated', 'ok');
+                } else {
+                    showToast('Failed to regenerate code.', 'err');
+                }
+            } catch (e) {
+                showToast('Failed to regenerate code.', 'err');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'New code';
+            }
+        }
+
+        function copySubLink() {
+            const text = document.getElementById('subUrl').innerText;
+            const done = function() {
+                const btn = document.getElementById('copySubBtn');
+                const orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                showToast('Subscription link copied', 'ok');
+                setTimeout(function() { btn.textContent = orig; }, 1600);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done, function() { showToast('Copy failed', 'err'); });
+            } else {
+                showToast('Copy not supported in this browser', 'err');
+            }
+        }
+
+        async function saveAll() {
+            syncFromDOM();
+            const saveBtn = document.getElementById('saveAllBtn');
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving…';
+            try {
+                const response = await fetch('/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groups: dataGroups, rotationChunk: currentRotationChunk, subToken: currentSubToken })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    if (result.groups && typeof result.groups === 'object') dataGroups = result.groups;
+                    markDirty(false);
+                    renderGroups();
+                    showToast('Saved successfully', 'ok');
+                } else {
+                    showToast('Error saving: ' + (result.error || 'unknown error'), 'err');
+                }
+            } catch (e) {
+                showToast('Network error while saving.', 'err');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = SAVE_LABEL;
+            }
+        }
+
+        const groupsContainerEl = document.getElementById('groupsContainer');
+        groupsContainerEl.addEventListener('dragover', function(e) {
+            if (dragFromIndex === null) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        });
+        groupsContainerEl.addEventListener('drop', function(e) {
+            if (dragFromIndex === null) return;
+            e.preventDefault();
+            commitDrop();
+        });
+
+        window.addEventListener('dragover', function(e) {
+            if (dragFromIndex === null) return;
+            dragPointerX = e.clientX;
+            dragPointerY = e.clientY;
+            e.preventDefault();
+        }, true);
+
+        document.addEventListener('dragend', function() { clearDragState(); });
+        window.addEventListener('drop', function(e) { if (dragFromIndex !== null) e.preventDefault(); });
+
+        window.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                e.preventDefault();
+                saveAll();
+            }
+        });
+        window.addEventListener('beforeunload', function(e) {
+            if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ''; }
+        });
+
+        updateChunkUI();
+        renderGroups();
+    </script>
+</body>
+</html>
+  `;
+}
