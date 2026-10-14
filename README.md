@@ -6,7 +6,7 @@ A self-hosted V2Ray/Xray subscription aggregator for Cloudflare Workers. It prov
 
 ## Interface preview
 
-![VPN Subscription Hub dashboard preview](assets/interface-preview.svg)
+![VPN Subscription Hub dashboard preview](assets/interface-preview.png)
 
 *This is an illustrative interface preview, not a screenshot captured from a live deployment.*
 
